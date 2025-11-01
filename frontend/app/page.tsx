@@ -309,7 +309,7 @@ export default function ChatPage() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyPress={handleKeyPress}
                 placeholder="Share what's on your mind... (Press Enter to send)"
-                className={`flex-1 resize-none rounded-2xl border ${darkMode ? 'border-purple-700/50 bg-slate-700/50 text-white placeholder-gray-500' : 'border-gray-300 bg-white'} px-4 py-3 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm max-h-32 transition-all`}
+                className={`flex-1 resize-none rounded-2xl border ${darkMode ? 'border-purple-700/50 bg-slate-700/50 text-white placeholder-gray-500' : 'border-gray-300 bg-white text-gray-800 placeholder-gray-500'} px-4 py-3 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm max-h-32 transition-all`}
                 rows={1}
                 disabled={isLoading}
               />
