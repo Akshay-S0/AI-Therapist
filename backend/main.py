@@ -14,8 +14,14 @@ from transformers import (
     AutoModelForCausalLM
 )
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging with more detail
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Global model storage
@@ -86,10 +92,7 @@ class ChatResponse(BaseModel):
     response: str
     is_crisis: bool = False
 
-# ---
-# PROMPT IMPROVEMENT 1: Detailed Personas
-# These now include specific therapeutic techniques and conversational tones.
-# ---
+# Detailed Personas
 PERSONAS = {
     "Anxiety": (
         "You are an AI therapist with a calm, grounding, and patient tone. "
@@ -130,7 +133,7 @@ PERSONAS = {
         "2. **Calm Reflection:** 'It sounds like you have a huge amount of energy today.' or 'It sounds like things are feeling very flat and difficult right now.' "
         "3. **Avoid Matching Intensity:** Do not get overly excited during mania or overly somber during depression. Maintain a consistent, calm, supportive tone."
     ),
-    "Personality disorder": ( # Renamed to "Emotional Intensity" for the frontend
+    "Personality disorder": (
         "You are an AI therapist focused on validation and emotional regulation, in the style of DBT. "
         "Your goal is to validate the *intense pain* behind the user's feelings without necessarily validating destructive actions. "
         "Use techniques like: "
@@ -174,101 +177,155 @@ def get_sentiment(text: str) -> str:
         predicted_class_id = torch.argmax(outputs.logits, dim=-1).item()
         sentiment = model.config.id2label[predicted_class_id]
         
+        # Get confidence scores for debugging
+        logits = outputs.logits[0]
+        probabilities = torch.nn.functional.softmax(logits, dim=0)
+        
+        # Log all sentiment probabilities
+        logger.info(f"=" * 60)
+        logger.info(f"INPUT TEXT: {text}")
+        logger.info(f"PREDICTED SENTIMENT: {sentiment}")
+        logger.info(f"CONFIDENCE SCORES:")
+        for idx, (label, prob) in enumerate(zip(model.config.id2label.values(), probabilities)):
+            logger.info(f"  {label}: {prob.item():.4f} ({prob.item()*100:.2f}%)")
+        logger.info(f"=" * 60)
+        
         return sentiment
         
     except Exception as e:
         logger.error(f"Error in sentiment analysis: {e}")
         raise HTTPException(status_code=500, detail="Sentiment analysis failed")
 
-# In main.py
-# REPLACE your old generate_response function with this one
-
 def generate_response(sentiment: str, user_input: str, history: list[Message]) -> tuple[str, bool]:
     """Generate therapeutic response based on sentiment and conversation history"""
     
+    # Crisis response if sentiment is Suicidal (already checked in endpoint)
     if sentiment == "Suicidal":
+        logger.info(f"🆘 Returning CRISIS_RESPONSE")
         return CRISIS_RESPONSE, True
     
+    logger.info(f"💬 Generating response for sentiment: {sentiment}")
+    
     try:
-        persona = PERSONAS.get(sentiment, PERSONAS["Normal"]) # Default to "Normal"
+        persona = PERSONAS.get(sentiment, PERSONAS["Normal"])
         
-        system_prompt = f"""
-        **Your Role:** You are 'MindfulAI', a compassionate AI therapist.
-        **Your Persona:** {persona}
+        # Build explicit conversation context summary
+        context_summary = ""
+        if history and len(history) > 0:
+            # Get last 3 user messages to build context
+            user_messages = [msg for msg in history if msg.role == "user"][-3:]
+            if user_messages:
+                context_summary = "\n**What the user has shared so far:**\n"
+                for i, msg in enumerate(user_messages, 1):
+                    context_summary += f"{i}. \"{msg.content}\"\n"
+                context_summary += "\n**IMPORTANT:** Reference these previous topics naturally in your response. Show you remember what they told you.\n"
         
-        **Core Instructions:**
-        1.  **Tone:** Use a warm, human-like, and non-clinical tone. Be empathetic and patient. Speak *to* the user, not *at* them.
-        2.  **Context:** Respond directly to the user's last message, but use the *entire conversation history* for context, memory, and continuity.
-        3.  **Length:** Write a concise, thoughtful response (usually 2-4 sentences). Avoid long paragraphs.
-        4.  **No Advice:** **CRITICAL:** Do NOT give medical advice, diagnoses, or 'fixes'. Do not use phrases like "You should..." or "Try to..."
-        5.  **Questioning:** Conclude your response with **one** gentle, open-ended question or a reflective prompt to encourage the user to share more. (e.g., "How does that feeling sit with you?", "What's coming up for you as you say that?", "Can you tell me more about that?").
+        system_prompt = f"""You are MindfulAI, a compassionate therapist. {persona}
+
+{context_summary}
+
+**CRITICAL RULES:**
+1. NEVER use bullet points, numbered lists, or dashes
+2. Write in natural, flowing sentences like you're talking to a friend
+3. Keep response to 2-4 sentences maximum
+4. Reference what they shared earlier if relevant
+5. End with ONE specific question
+
+**Current user message:** "{user_input}"
+
+Respond in a warm, conversational way:"""
         
-        **Example of a good response:**
-        User: "i feel awful today, just so empty."
-        You: "That sounds like a very heavy and painful feeling. I'm really glad you're here and sharing that with me. Can you tell me more about that feeling of emptiness?"
-        """
-        
-        # ---
-        # FIX IS HERE
-        # ---
-        
-        # 1. Convert Pydantic models to dicts, standardizing role & skipping the first welcome message
+        # Build conversation history 
         chat_history = []
-        if history: # Only loop if history is not empty
-            # Start from the 2nd message (index 1) to skip the initial "Hello..."
-            for msg in history[1:]: 
-                # Standardize role: 'assistant' (from frontend) becomes 'model' (for Gemma)
-                role = "model" if msg.role == "assistant" else "user"
-                # Fix Pydantic warning: use .model_dump() and get content
-                chat_history.append({"role": role, "content": msg.content})
-
-        # 2. Add the new user input
-        chat_history.append({"role": "user", "content": user_input})
-
-        # 3. Create the final prompt list, starting with our system prompt and prime
-        final_chat_list = [
-            {"role": "user", "content": system_prompt},
-            {"role": "model", "content": "I understand. I'm here to listen and support you. What's on your mind?"},
-            *chat_history  # Add the rest of the processed history
-        ]
-        # ---
-        # END OF FIX
-        # ---
-
+        
+        # Only include last 4 exchanges (8 messages) to keep context manageable for small model
+        recent_history = history[-8:] if len(history) > 8 else history
+        
+        for msg in recent_history:
+            role = "model" if msg.role == "assistant" else "user"
+            chat_history.append({"role": role, "content": msg.content})
+        
+        # Add current user input with system prompt
+        chat_history.append({
+            "role": "user", 
+            "content": system_prompt
+        })
+        
+        # Ensure alternation
+        cleaned_history = []
+        for i, msg in enumerate(chat_history):
+            if i == 0:
+                cleaned_history.append(msg)
+            elif msg["role"] != cleaned_history[-1]["role"]:
+                cleaned_history.append(msg)
+            else:
+                cleaned_history[-1]["content"] += "\n" + msg["content"]
+        
         tokenizer = models['gen_tokenizer']
         model = models['gen_model']
         
         prompt = tokenizer.apply_chat_template(
-            final_chat_list, 
+            cleaned_history, 
             tokenize=False, 
             add_generation_prompt=True
         )
         
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-        
         prompt_length = inputs.input_ids.shape[1]
         
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=150,
+                max_new_tokens=200,
                 do_sample=True,
-                temperature=0.75,
-                top_k=50,
-                top_p=0.95,
+                temperature=0.9,  # Higher for more natural responses
+                top_k=40,
+                top_p=0.92,
+                repetition_penalty=1.3,  # Stronger penalty against repetition
                 pad_token_id=tokenizer.eos_token_id
             )
         
         generated_ids = outputs[0][prompt_length:]
         response = tokenizer.decode(generated_ids, skip_special_tokens=True)
         
-        return response.strip(), False
+        # Clean up response - remove any leftover formatting
+        response = response.strip()
+        
+        # More aggressive bullet point removal
+        lines = response.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            line = line.strip()
+            # Skip empty lines
+            if not line:
+                continue
+            # Skip lines that are clearly bullet points or list items
+            if (line.startswith(('-', '•', '*', '1.', '2.', '3.', '4.', '5.')) or 
+                line.startswith(tuple(f"{i}." for i in range(10)))):
+                continue
+            # Skip lines that start with "- " after stripping
+            if line.startswith('- ') or line.startswith('* '):
+                continue
+            cleaned_lines.append(line)
+        
+        # If we removed everything, just use first line
+        if not cleaned_lines and lines:
+            response = lines[0].strip()
+        else:
+            response = ' '.join(cleaned_lines).strip()
+        
+        # Remove markdown-style formatting
+        response = response.replace('**', '').replace('__', '').replace('##', '')
+        
+        logger.info(f"✅ Generated response length: {len(response)} chars")
+        logger.info(f"📝 Response preview: {response[:100]}...")
+        
+        return response, False
         
     except Exception as e:
         logger.error(f"Error in response generation: {e}")
-        # Log the problematic chat list for debugging
-        if 'final_chat_list' in locals():
-            logger.error(f"Problematic chat list: {final_chat_list}")
+        if 'cleaned_history' in locals():
+            logger.error(f"Problematic chat history: {cleaned_history}")
         raise HTTPException(status_code=500, detail="Response generation failed")
 
 @app.get("/")
@@ -291,9 +348,67 @@ async def chat(request: ChatRequest):
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     
+    print("\n" + "="*80)
+    print(f"📨 NEW MESSAGE RECEIVED: {request.message}")
+    print("="*80)
+    
     try:
+        # Step 1: Get sentiment from model
         sentiment = get_sentiment(request.message)
-        logger.info(f"Detected sentiment: {sentiment}")
+        print(f"📊 ORIGINAL MODEL SENTIMENT: {sentiment}")
+        logger.info(f"📊 ORIGINAL MODEL SENTIMENT: {sentiment}")
+        
+        # Step 2: Check for suicidal keywords override (EXACT phrase matching)
+        suicidal_keywords = [
+            'kill myself', 
+            'end my life', 
+            'want to die', 
+            'want to be dead',
+            'suicide', 
+            'suicidal',
+            'no reason to live', 
+            'no reason for living',
+            'better off dead', 
+            'not worth living',
+            'end it all', 
+            'harm myself', 
+            'take my life', 
+            'don\'t want to live', 
+            'no point in living', 
+            'no reason for keep living',
+            'no reason to keep living', 
+            'tired of living', 
+            'can\'t go on',
+            'wish i was dead',
+            'rather be dead'
+        ]
+        
+        user_lower = request.message.lower()
+        
+        # More strict matching - check if phrase exists as whole words
+        has_suicidal_keyword = False
+        matched_keyword = None
+        for keyword in suicidal_keywords:
+            # Check if the keyword is in the message
+            if keyword in user_lower:
+                # Additional check: make sure it's not a false positive
+                # Exclude common phrases like "what should i do"
+                if keyword == 'do' and ('what should i do' in user_lower or 'what do i do' in user_lower):
+                    continue
+                has_suicidal_keyword = True
+                matched_keyword = keyword
+                break
+        
+        if has_suicidal_keyword:
+            print(f"🚨 CRISIS OVERRIDE: Matched keyword: '{matched_keyword}'")
+            print(f"🚨 {sentiment} → Suicidal")
+            logger.warning(f"🚨 CRISIS OVERRIDE: Suicidal keyword detected: '{matched_keyword}'")
+            logger.warning(f"🚨 ORIGINAL SENTIMENT: {sentiment} → OVERRIDDEN TO: Suicidal")
+            sentiment = "Suicidal"
+        
+        print(f"✅ FINAL SENTIMENT: {sentiment}")
+        print("="*80 + "\n")
+        logger.info(f"✅ FINAL SENTIMENT USED: {sentiment}")
         
         response, is_crisis = generate_response(
             sentiment, 
@@ -305,6 +420,8 @@ async def chat(request: ChatRequest):
         display_sentiment = sentiment
         if sentiment == "Personality disorder":
             display_sentiment = "Emotional Intensity"
+        
+        logger.info(f"📤 RESPONSE SENT - Sentiment: {display_sentiment}, Crisis: {is_crisis}")
         
         return ChatResponse(
             sentiment=display_sentiment,
