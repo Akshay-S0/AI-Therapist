@@ -243,16 +243,7 @@ export default function ChatPage() {
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
 
-    // Frontend safety check for suicidal language
-    const suicidalKeywords = [
-      'kill myself', 'end my life', 'want to die', 'suicide', 'suicidal',
-      'no reason to live', 'better off dead', 'not worth living',
-      'end it all', 'harm myself', 'take my life'
-    ];
     
-    const hasCrisisLanguage = suicidalKeywords.some(keyword => 
-      input.toLowerCase().includes(keyword)
-    );
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -299,8 +290,8 @@ export default function ChatPage() {
           id: (Date.now() + 1).toString(),
           type: 'bot',
           content: data.response,
-          sentiment: hasCrisisLanguage ? 'Suicidal' : data.sentiment, // Override if crisis detected
-          isCrisis: data.is_crisis || hasCrisisLanguage,
+          sentiment: data.sentiment, 
+          isCrisis: data.is_crisis ,
           timestamp: new Date(),
         };
         setMessages(prev => {
@@ -630,7 +621,7 @@ export default function ChatPage() {
                       cx="50%"
                       cy="50%"
                       labelLine={false}
-                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                      label={(entry: any) => `${entry.name} ${(entry.percent * 100).toFixed(0)}%`}
                       outerRadius={80}
                       fill="#8884d8"
                       dataKey="value"
