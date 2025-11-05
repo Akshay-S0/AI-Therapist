@@ -91,6 +91,11 @@ export default function ChatPage() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [moodData, setMoodData] = useState<MoodEntry[]>([]);
   const [currentSessionStart, setCurrentSessionStart] = useState<Date>(new Date());
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [confirmModalData, setConfirmModalData] = useState<{
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -176,10 +181,11 @@ export default function ChatPage() {
     }
   };
 
-  const saveSession = () => {
-    if (messages.length <= 1) return;
+  const saveSession = (messagesToSave?: Message[]) => {
+    const messagesToUse = messagesToSave || messages;
+    if (messagesToUse.length <= 1) return;
 
-    const sentiments = messages.filter(m => m.sentiment).map(m => m.sentiment!);
+    const sentiments = messagesToUse.filter(m => m.sentiment).map(m => m.sentiment!);
     const sentimentCounts = sentiments.reduce((acc, s) => {
       acc[s] = (acc[s] || 0) + 1;
       return acc;
@@ -190,9 +196,9 @@ export default function ChatPage() {
       id: Date.now().toString(),
       startTime: currentSessionStart,
       endTime: new Date(),
-      messages: messages,
+      messages: messagesToUse,
       dominantSentiment,
-      messageCount: messages.length
+      messageCount: messagesToUse.length
     };
 
     try {
@@ -207,16 +213,24 @@ export default function ChatPage() {
   };
 
   const clearChat = () => {
-    if (confirm('Are you sure you want to clear the conversation? This will save the current session.')) {
-      saveSession();
-      setMessages([{
-        id: Date.now().toString(),
-        type: 'bot',
-        content: "Hello again. I'm here whenever you need to talk. What's on your mind?",
-        timestamp: new Date(),
-      }]);
-      setCurrentSessionStart(new Date());
-    }
+    // Capture current messages to ensure we save them before clearing
+    const currentMessages = messages;
+    setConfirmModalData({
+      message: 'Are you sure you want to clear the conversation? This will save the current session.',
+      onConfirm: () => {
+        saveSession(currentMessages);
+        setMessages([{
+          id: Date.now().toString(),
+          type: 'bot',
+          content: "Hello again. I'm here whenever you need to talk. What's on your mind?",
+          timestamp: new Date(),
+        }]);
+        setCurrentSessionStart(new Date());
+        setShowConfirmModal(false);
+        setConfirmModalData(null);
+      }
+    });
+    setShowConfirmModal(true);
   };
 
   const loadSession = (session: Session) => {
@@ -225,19 +239,25 @@ export default function ChatPage() {
   };
 
   const deleteSession = (sessionId: string) => {
-    if (confirm('Delete this session?')) {
-      try {
-        const stored = localStorage.getItem('ai-therapist-sessions');
-        if (stored) {
-          const sessions = JSON.parse(stored);
-          const updated = sessions.filter((s: Session) => s.id !== sessionId);
-          localStorage.setItem('ai-therapist-sessions', JSON.stringify(updated));
-          loadSessionHistory();
+    setConfirmModalData({
+      message: 'Are you sure you want to delete this session?',
+      onConfirm: () => {
+        try {
+          const stored = localStorage.getItem('ai-therapist-sessions');
+          if (stored) {
+            const sessions = JSON.parse(stored);
+            const updated = sessions.filter((s: Session) => s.id !== sessionId);
+            localStorage.setItem('ai-therapist-sessions', JSON.stringify(updated));
+            loadSessionHistory();
+          }
+        } catch (error) {
+          console.error('Failed to delete session:', error);
         }
-      } catch (error) {
-        console.error('Failed to delete session:', error);
+        setShowConfirmModal(false);
+        setConfirmModalData(null);
       }
-    }
+    });
+    setShowConfirmModal(true);
   };
 
   const sendMessage = async () => {
@@ -767,6 +787,56 @@ export default function ChatPage() {
           </div>
         )}
       </div>
+
+      {/* Confirmation Modal */}
+      {showConfirmModal && confirmModalData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          {/* Backdrop */}
+          <div 
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => {
+              setShowConfirmModal(false);
+              setConfirmModalData(null);
+            }}
+          />
+          
+          {/* Modal */}
+          <div className={`relative ${cardBg} backdrop-blur-xl rounded-3xl shadow-2xl border ${darkMode ? 'border-purple-700/50' : 'border-purple-100'} p-6 max-w-md w-full animate-fadeIn`}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className={`p-2 rounded-xl ${darkMode ? 'bg-red-500/20' : 'bg-red-100'}`}>
+                <AlertCircle className={`w-6 h-6 ${darkMode ? 'text-red-400' : 'text-red-600'}`} />
+              </div>
+              <h3 className={`text-xl font-semibold ${textColor}`}>Confirm Action</h3>
+            </div>
+            
+            <p className={`text-sm mb-6 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+              {confirmModalData.message}
+            </p>
+            
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  setShowConfirmModal(false);
+                  setConfirmModalData(null);
+                }}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  darkMode 
+                    ? 'bg-slate-700 text-gray-300 hover:bg-slate-600' 
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmModalData.onConfirm}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all bg-gradient-to-r from-red-500 to-red-600 text-white hover:from-red-600 hover:to-red-700 shadow-lg`}
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style jsx>{`
         @keyframes fadeIn {
