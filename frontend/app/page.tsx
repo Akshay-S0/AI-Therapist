@@ -117,22 +117,7 @@ const createGreetingMessage = (name?: string | null): Message => ({
   timestamp: new Date(),
 });
 
-const personalizeResponse = (response: string, name?: string | null): string => {
-  if (!name) return response;
-  const trimmed = response.trim();
-  const lowerResponse = trimmed.toLowerCase();
-  const nameLower = name.toLowerCase();
-  
-  // Check if response already starts with a greeting containing the name
-  if (lowerResponse.startsWith(`hey, ${nameLower}`) || 
-      lowerResponse.startsWith(`hi, ${nameLower}`) ||
-      lowerResponse.startsWith(`hello, ${nameLower}`)) {
-    return trimmed;
-  }
-  
-  // Add personalized greeting if not present
-  return `Hey, ${name}. ${trimmed}`;
-};
+// Removed personalizeResponse - greetings should only appear in initial message, not every response
 
 export default function ChatPage() {
   const [currentView, setCurrentView] = useState<'chat' | 'dashboard' | 'history'>('chat');
@@ -489,7 +474,7 @@ export default function ChatPage() {
         const botMessage: Message = {
           id: (Date.now() + 1).toString(),
           type: 'bot',
-          content: personalizeResponse(data.response, userName),
+          content: data.response,
           sentiment: data.sentiment, 
           isCrisis: data.is_crisis ,
           timestamp: new Date(),

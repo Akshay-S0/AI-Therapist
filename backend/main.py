@@ -276,6 +276,7 @@ def generate_response(sentiment: str, user_input: str, history: list[Message]) -
 3. Keep response to 2-4 sentences maximum
 4. Reference what they shared earlier if relevant
 5. End with ONE specific question
+6. Do NOT start every message with a greeting. Only greet once at the very beginning of the conversation. After that, respond naturally without greetings.
 
 **Current user message:** "{user_input}"
 
