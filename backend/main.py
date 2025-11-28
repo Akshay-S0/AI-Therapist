@@ -1,11 +1,14 @@
 import os
 import logging
+import secrets
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, Dict
+from datetime import datetime
 
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 from transformers import (
     RobertaTokenizer,
@@ -14,7 +17,6 @@ from transformers import (
     AutoModelForCausalLM
 )
 
-# Configure logging with more detail
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -26,6 +28,41 @@ logger = logging.getLogger(__name__)
 
 # Global model storage
 models = {}
+
+# In-memory session store (resets on server restart)
+sessions: Dict[str, dict] = {}
+SESSION_COOKIE_NAME = "session_id"
+
+class SessionMiddleware(BaseHTTPMiddleware):
+    """Middleware to handle in-memory sessions"""
+    
+    async def dispatch(self, request: Request, call_next):
+        # Get or create session ID from cookie
+        session_id = request.cookies.get(SESSION_COOKIE_NAME)
+        
+        if not session_id or session_id not in sessions:
+            # Create new session
+            session_id = secrets.token_urlsafe(32)
+            sessions[session_id] = {}
+        
+        # Attach session to request state
+        request.state.session = sessions[session_id]
+        request.state.session_id = session_id
+        
+        # Process request
+        response = await call_next(request)
+        
+        # Set session cookie (session cookie - no maxAge)
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=session_id,
+            httponly=True,
+            samesite="lax",
+            secure=False,  # Set to True in production with HTTPS
+            # No maxAge means it's a session cookie
+        )
+        
+        return response
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -69,6 +106,9 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Session middleware (must be before CORS)
+app.add_middleware(SessionMiddleware)
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -91,6 +131,12 @@ class ChatResponse(BaseModel):
     sentiment: str
     response: str
     is_crisis: bool = False
+
+class SetNameRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, description="User's name")
+
+class GetNameResponse(BaseModel):
+    name: Optional[str] = None
 
 # Detailed Personas
 PERSONAS = {
@@ -340,6 +386,29 @@ async def health_check():
         "status": "healthy" if models_loaded else "unhealthy",
         "models_loaded": models_loaded
     }
+
+@app.post("/api/set-name")
+async def set_name(request: SetNameRequest, req: Request):
+    """Store user's name in session"""
+    try:
+        session = req.state.session
+        session['userName'] = request.name.strip()
+        logger.info(f"✅ Name stored in session: {request.name}")
+        return {"success": True, "name": session['userName']}
+    except Exception as e:
+        logger.error(f"Error storing name: {e}")
+        raise HTTPException(status_code=500, detail="Failed to store name")
+
+@app.get("/api/get-name", response_model=GetNameResponse)
+async def get_name(req: Request):
+    """Get user's name from session"""
+    try:
+        session = req.state.session
+        name = session.get('userName')
+        return GetNameResponse(name=name)
+    except Exception as e:
+        logger.error(f"Error retrieving name: {e}")
+        return GetNameResponse(name=None)
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
